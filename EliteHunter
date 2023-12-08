@@ -1,0 +1,918 @@
+local EliteHunt = inheritsFrom(ml_task)
+local EHDB = {}
+
+EliteHunt.version = "0.1.0"
+EliteHunt.name = "EliteHunt"
+
+EliteHunt.currentHunt = nil
+EliteHunt.huntList = {
+    ARR = nil
+}
+
+function EliteHunt.Create()
+    local ehi = inheritsFrom(EliteHunt)
+    ehi.valid = true
+    ehi.completed = false
+    ehi.subtask = nil
+    ehi.auxiliary = false
+    ehi.process_elements = {}
+    ehi.overwatch_elements = {}
+    ehi.name = "EliteHunt"
+
+    return ehi
+end
+
+function EliteHunt.OnUpdate(event, ticks)
+end
+
+function EliteHunt:Draw(event, ticks)
+    local fw = GUI:GetContentRegionAvail()
+
+    ffxiv_dialog_manager.TableToGUI(EliteHunt.currentHunt)
+
+    if (GUI:Button("Open Hunt", fw, 30)) then
+        local boardId = next(EntityList("contentid=2004440"))
+        if (boardId ~= nil) then
+            Player:SetTarget(boardId)
+            Player:Interact(boardId)
+        end
+    end
+    if (GUI:Button("Select Hunt", fw, 30)) then
+        if (IsControlOpen("SelectString")) then
+            SelectConversationIndex(2)
+        end
+    end
+end
+
+function EliteHunt:Init()
+    local ke_ehmovetoboards = ml_element:create("ehmovetoboards", c_ehmovetoboards, e_ehmovetoboards, 300)
+    self:add(ke_ehmovetoboards, self.process_elements)
+
+    local ke_ehreadhuntbills = ml_element:create("ehreadhuntbills", c_ehreadhuntbills, e_ehreadhuntbills, 320)
+    self:add(ke_ehreadhuntbills, self.process_elements)
+
+    local ke_ehopencarriedbills =
+        ml_element:create("ehopencarriedbills", c_ehopencarriedbills, e_ehopencarriedbills, 310)
+    self:add(ke_ehopencarriedbills, self.process_elements)
+
+    local ke_ehselecthunt = ml_element:create("ehselecthunt", c_ehselecthunt, e_ehselecthunt, 200)
+    self:add(ke_ehselecthunt, self.process_elements)
+
+    local ke_ehhuntthehunt = ml_element:create("ehhuntthehunt", c_ehhuntthehunt, e_ehhuntthehunt, 100)
+    self:add(ke_ehhuntthehunt, self.process_elements)
+end
+
+function EliteHunt:ModuleInit()
+    if (not ffxivminion.modes[EliteHunt.name]) then
+        ffxivminion.AddMode(EliteHunt.name, EliteHunt)
+    end
+
+    d("[EliteHunt] initialized")
+end
+
+
+-- TODO implement better nearest neighbour search
+function EliteHunt.MakePatrolRoute(positions)
+    local points = deepcopy(positions)
+    local reference = {}
+    reference.x, reference.y, reference.z =
+        WorldToMapCoords(Player.localmapid, Player.pos.x, Player.pos.y, Player.pos.z)
+    local route = {}
+    local sd = 9999
+    local closesPointIndex = 0
+    while (#points > 0) do
+        for i = 1, #points do
+            distance = Distance2D(reference.x, reference.y, points[i][1], points[i][2])
+            if (distance < sd) then
+                closesPointIndex = i
+                sd = distance
+            end
+        end
+        sd = 9999
+        table.insert(route, points[closesPointIndex])
+        table.remove(points, closesPointIndex)
+        reference = {x = route[#route][1], y = route[#route][2]}
+    end
+    return route
+end
+
+function EliteHunt.IsHuntListMissing()
+    if (next(EliteHunt.huntList) == nil) then
+        return true
+    end
+    return false
+end
+
+function EliteHunt.IsHuntControlOpen()
+    local controls = GetControls()
+    for i, c in pairs(controls) do
+        if (string.contains(c.name, "Mobhunt")) then
+            return true
+        end
+    end
+    return false
+end
+
+function EliteHunt.IsHuntBillMissing()
+    local bil = EHDB.billIdList
+    if (GetItem(bil.ARR)) then
+        -- and GetItem(bil.HW) and GetItem(bil.SB) and GetItem(bil.ShB)
+        return false
+    else
+        return true
+    end
+end
+
+function EliteHunt.IsHunting()
+    return EliteHunt.currentHunt ~= nil
+end
+
+function EliteHunt.IsReadyToSelectHunt()
+    return ((not EliteHunt.IsHuntBillMissing()) and (not EliteHunt.IsHuntControlOpen()) and
+        (not EliteHunt.IsHuntListMissing()))
+end
+
+
+
+c_ehopencarriedbills = inheritsFrom(ml_cause)
+c_ehopencarriedbills.throttle = 200
+e_ehopencarriedbills = inheritsFrom(ml_effect)
+
+function c_ehopencarriedbills:evaluate()
+    if (EliteHunt.IsHuntListMissing() and not EliteHunt.IsHuntControlOpen() and not EliteHunt.IsHunting()) then
+        return true
+    end
+    return false
+end
+
+function e_ehopencarriedbills:execute()
+    d("[EH] Opening the bills I Have")
+    local hl = EliteHunt.huntList
+    local bil = EHDB.billIdList
+
+    if (hl.ARR == nil and GetItem(bil.ARR)) then
+        GetItem(bil.ARR):Cast()
+    -- elseif(hl.HW == nil and GetItem(bil.HW)) then
+    --     GetItem(bil.HW):Cast()
+    -- elseif(hl.SB == nil and GetItem(bil.SB)) then
+    --     GetItem(bil.SB):Cast()
+    -- elseif(hl.ShB == nil and GetItem(bil.ShB)) then
+    --     GetItem(bil.ShB):Cast()
+    -- else
+    end
+end
+
+
+c_ehreadhuntbills = inheritsFrom(ml_cause)
+c_ehreadhuntbills.throttle = 200
+e_ehreadhuntbills = inheritsFrom(ml_effect)
+
+function c_ehreadhuntbills:evaluate()
+    return IsControlOpen("Mobhunt")
+end
+
+function e_ehreadhuntbills:execute()
+    d("[EH] Reading this bill")
+    local controls = GetControls()
+    for i, c in pairs(controls) do
+        if (string.contains(c.name, "Mobhunt")) then
+            local huntcs = c:GetStrings()
+            local namepos = (table.find(huntcs, "Name: "))
+            local name = huntcs[next(huntcs, namepos)]
+            local level = EHDB.huntLevel[huntcs[next(huntcs)]]
+            EliteHunt.huntList[level] = EHDB.huntIdList[level][name]
+            c:PushButton(25, 0)
+        end
+    end
+end
+
+
+c_ehmovetoboards = inheritsFrom(ml_cause)
+c_ehmovetoboards.throttle = 1000
+e_ehmovetoboards = inheritsFrom(ml_effect)
+
+function c_ehmovetoboards:evaluate()
+    d("The hunt bill is missing :[" .. tostring(EliteHunt.IsHuntBillMissing()) .. "]")
+    d("I am hunting :[" .. tostring(EliteHunt.IsHunting()) .. "]")
+    d("I am reading :[" .. tostring(EliteHunt.IsHuntControlOpen()) .. "]")
+    return (EliteHunt.IsHuntBillMissing() and not EliteHunt.IsHunting() and not EliteHunt.IsHuntControlOpen())
+end
+
+function e_ehmovetoboards:execute()
+    d("[EH] Moving to Board")
+    local boardPos = {
+        x = -152,
+        y = 4.20,
+        z = -92
+    }
+    local mapid = 130
+    if (CanAccessMap(mapid)) then
+        local task = nil
+        if (IsOnMap(mapid) and math.distance2d(Player.pos, boardPos) <= 1) then
+            EliteHunt.tpUld = false
+        elseif (IsOnMap(mapid)) then
+            task = ffxiv_task_movetomap.Create()
+            task.destMapID = mapid
+            task.pos = boardPos
+        else
+            task = ffxiv_task_movetopos.Create()
+            task.range = 1
+            task.pos = boardPos
+        end
+        if (task) then
+            ml_task_hub:RootTask():AddSubTask(task)
+        end
+    end
+end
+
+
+c_ehselecthunt = inheritsFrom(ml_cause)
+e_ehselecthunt = inheritsFrom(ml_effect)
+
+function c_ehselecthunt:evaluate()
+    if (EliteHunt.IsReadyToSelectHunt() and not EliteHunt.IsHunting()) then
+        return true
+    else
+        return false
+    end
+end
+
+function e_ehselecthunt:execute()
+    d("[EH] Selecting Hunt")
+    local huntchosen = nil
+    if (EliteHunt.huntList.ARR ~= nil) then
+        huntchosen = EliteHunt.huntList.ARR
+        EliteHunt.huntList.ARR = nil
+    elseif (true) then
+    end
+    EliteHunt.currentHunt = huntchosen
+end
+
+
+c_ehhuntthehunt = inheritsFrom(ml_cause)
+e_ehhuntthehunt = inheritsFrom(ml_effect)
+
+function c_ehhuntthehunt:evaluate()
+    return EliteHunt.IsHunting()
+end
+
+function e_ehhuntthehunt:execute()
+    d("[EH] Starting the Hunt")
+    if (IsOnMap(EliteHunt.currentHunt.mapid)) then
+        d("[EH] I'm on the map")
+        if (EliteHunt.currentHunt.route == nil) then
+            d("[EH] Starting Patrol")
+            EliteHunt.currentHunt.route = EliteHunt.MakePatrolRoute(EliteHunt.currentHunt.locations)
+            EliteHunt.currentHunt.routePosition = 1
+        else
+            if (EliteHunt.currentHunt.routePosition > #EliteHunt.currentHunt.route) then
+                d("[EH] Restarting patrol")
+                EliteHunt.currentHunt.routePosition = 1
+            end
+            local coordinates = EliteHunt.currentHunt.route[EliteHunt.currentHunt.routePosition]
+            coordinates[1] = coordinates[1]
+            coordinates[2] = coordinates[2]
+            d("[EH] Patrolling pos [" .. coordinates[1] .. "," .. coordinates[2] .. "]")
+            local patroltask = ffxiv_task_movetopos.Create()
+            -- TODO conver world points to map points
+            patroltask.pos = FindClosestMesh({x = coordinates[1], y = coordinates[2], nil}, 10)
+            d("[EH] Target Pos is")
+            d(patroltask.pos)
+            patroltask.range = 2
+            ml_task_hub:CurrentTask():AddSubTask(patroltask)
+            EliteHunt.currentHunt.routePosition = EliteHunt.currentHunt.routePosition + 1
+        end
+    elseif (CanAccessMap(EliteHunt.currentHunt.mapid)) then
+        if (not IsOnMap(EliteHunt.currentHunt.mapid)) then
+            d("[EH] I'm not on the map")
+            task = ffxiv_task_movetomap.Create()
+            task.destMapID = EliteHunt.currentHunt.mapid
+        end
+        if (task) then
+            ml_task_hub:RootTask():AddSubTask(task)
+        end
+    end
+end
+
+
+RegisterEventHandler("Module.Initalize", EliteHunt.ModuleInit, "EliteHunt")
+
+
+EHDB.Compatibility = "5.0"
+
+EHDB.huntIdList = {
+    ARR = {
+        ["White Joker"] = {
+            id = 2919,
+            mapid = 148,
+            locations = {
+                {22, 30},
+                {23, 27},
+                {22, 24},
+                {27, 23},
+                {28, 22},
+                {30, 23},
+                {27, 21},
+                {29, 20},
+                {31, 19},
+                {29, 14},
+                {21, 16},
+                {19, 18},
+                {17, 18},
+                {16, 20},
+                {16, 21},
+                {16, 24},
+                {14, 20},
+                {13, 21},
+                {12, 19},
+                {10, 19},
+                {10, 17},
+                {10, 22},
+                {12, 23}
+            }
+        },
+        ["Stinging Sophie"] = {
+            id = 2920,
+            mapid = 152,
+            locations = {
+                {25, 17},
+                {24, 17},
+                {24, 15},
+                {26, 11},
+                {25, 10},
+                {26, 13},
+                {27, 13},
+                {29, 11},
+                {28, 13},
+                {30, 13},
+                {32, 15},
+                {30, 18},
+                {27, 18},
+                {27, 19},
+                {32, 21},
+                {29, 21},
+                {26, 21},
+                {28, 23},
+                {27, 25},
+                {25, 24},
+                {26, 25},
+                {19, 25},
+                {23, 22},
+                {21, 22},
+                {17, 22},
+                {17, 23},
+                {16, 24},
+                {13, 24},
+                {14, 26},
+                {14, 27},
+                {20, 29},
+                {24, 31},
+                {22, 28},
+                {22, 29},
+                {25, 12}
+            }
+        },
+        ["Monarch Ogrefly"] = {
+            id = 2921,
+            mapid = 153,
+            locations = {
+                {17, 32},
+                {16, 32},
+                {18, 31},
+                {17, 31},
+                {16, 28},
+                {16, 27},
+                {19, 28},
+                {19, 27},
+                {21, 28},
+                {22, 26},
+                {23, 24},
+                {27, 22},
+                {29, 24},
+                {31, 25},
+                {32, 24},
+                {33, 24},
+                {22, 21},
+                {23, 22},
+                {22, 19},
+                {24, 18},
+                {27, 20},
+                {27, 18},
+                {27, 23},
+                {19, 18},
+                {17, 18},
+                {16, 19},
+                {17, 22},
+                {19, 22},
+                {17, 24}
+            }
+        },
+        ["Phecda"] = {
+            id = 2922,
+            mapid = 154,
+            locations = {
+                {21, 30},
+                {19, 29},
+                {18, 29},
+                {16, 29},
+                {18, 27},
+                {17, 26},
+                {23, 28},
+                {25, 29},
+                {25, 26},
+                {26, 26},
+                {28, 27},
+                {28, 24},
+                {22, 24},
+                {26, 23},
+                {28, 22},
+                {29, 22},
+                {24, 20},
+                {23, 20},
+                {22, 21},
+                {19, 20}
+            }
+        },
+        ["Sewer Syrup"] = {
+            id = 2923,
+            mapid = 140,
+            locations = {
+                {26, 26},
+                {21, 28},
+                {20, 29},
+                {19, 29},
+                {21, 25},
+                {21, 24},
+                {22, 24},
+                {23, 25},
+                {22, 22},
+                {23, 20},
+                {26, 19},
+                {27, 17},
+                {18, 17},
+                {17, 16},
+                {18, 15},
+                {14, 8},
+                {15, 6},
+                {12, 7},
+                {12, 6},
+                {10, 7},
+                {11, 5},
+                {8, 5}
+            }
+        },
+        ["Ovjang"] = {
+            id = 2924,
+            mapid = 141,
+            locations = {
+                {23, 35},
+                {24, 32},
+                {22, 31},
+                {26, 30},
+                {20, 26},
+                {19, 25},
+                {19, 24},
+                {17, 23},
+                {19, 21},
+                {16, 19},
+                {18, 19},
+                {22, 21},
+                {18, 18},
+                {16, 16},
+                {16, 13},
+                {18, 13},
+                {22, 14},
+                {22, 16},
+                {21, 16},
+                {26, 18},
+                {28, 18},
+                {27, 22},
+                {30, 21}
+            }
+        },
+        ["Gatling"] = {
+            id = 2925,
+            mapid = 145,
+            locations = {
+                {13, 29},
+                {15, 26},
+                {16, 27},
+                {17, 26},
+                {17, 25},
+                {18, 25},
+                {20, 25},
+                {19, 23},
+                {18, 22},
+                {17, 20},
+                {16, 20},
+                {15, 19},
+                {15, 17},
+                {13, 16},
+                {11, 19},
+                {13, 19},
+                {18, 28},
+                {19, 29},
+                {21, 29},
+                {23, 27},
+                {25, 26},
+                {27, 25},
+                {28, 26},
+                {28, 27},
+                {28, 21},
+                {25, 24},
+                {23, 23},
+                {24, 21},
+                {23, 20},
+                {24, 19},
+                {23, 20},
+                {26, 17},
+                {27, 20},
+                {27, 18},
+                {29, 18}
+            }
+        },
+        ["Albin the Ashen"] = {
+            id = 2926,
+            mapid = 146,
+            locations = {
+                {18, 30},
+                {17, 33},
+                {14, 34},
+                {15, 38},
+                {17, 36},
+                {19, 38},
+                {23, 38},
+                {25, 40},
+                {25, 36},
+                {23, 33},
+                {21, 34},
+                {21, 32},
+                {29, 35},
+                {24, 30},
+                {21, 29},
+                {20, 28},
+                {21, 26},
+                {19, 25},
+                {17, 26},
+                {16, 24},
+                {17, 23},
+                {18, 23},
+                {18, 21},
+                {21, 23},
+                {24, 25},
+                {21, 21},
+                {19, 19},
+                {16, 20},
+                {24, 21},
+                {28, 21},
+                {31, 18},
+                {33, 20},
+                {19, 17},
+                {17, 17},
+                {17, 12},
+                {18, 11},
+                {18, 10},
+                {21, 11},
+                {24, 12},
+                {25, 11},
+                {25, 9},
+                {23, 8}
+            }
+        },
+        ["Flame Sergeant Dalvag"] = {
+            id = 2927,
+            mapid = 147,
+            locations = {
+                {21, 28},
+                {22, 27},
+                {23, 26},
+                {24, 25},
+                {22, 25},
+                {24, 24},
+                {24, 23},
+                {23, 23},
+                {16, 19},
+                {15, 19},
+                {19, 18},
+                {18, 17},
+                {18, 17},
+                {19, 17},
+                {17, 17},
+                {17, 15},
+                {16, 16},
+                {16, 14}
+            }
+        },
+        ["Skogs Fru"] = {
+            id = 2928,
+            mapid = 134,
+            locations = {
+                {24, 24},
+                {23, 23},
+                {25, 24},
+                {24, 21},
+                {24, 20},
+                {20, 22},
+                {20, 21},
+                {19, 20},
+                {21, 18},
+                {23, 17},
+                {21, 15},
+                {20, 14},
+                {19, 16},
+                {17, 17},
+                {18, 18},
+                {16, 15},
+                {17, 14},
+                {18, 13},
+                {14, 14},
+                {14, 12},
+                {17, 14},
+                {16, 11},
+                {18, 10},
+                {17, 8}
+            }
+        },
+        ["Barbastelle"] = {
+            id = 2929,
+            mapid = 135,
+            locations = {
+                {23, 36},
+                {22, 34},
+                {21, 36},
+                {20, 35},
+                {19, 35},
+                {17, 35},
+                {20, 37},
+                {23, 38},
+                {20, 32},
+                {25, 26},
+                {27, 26},
+                {26, 25},
+                {25, 22},
+                {29, 20},
+                {29, 18},
+                {29, 17},
+                {30, 14},
+                {31, 16},
+                {33, 16},
+                {34, 17}
+            }
+        },
+        ["Bloody Mary"] = {
+            id = 2930,
+            mapid = 137,
+            locations = {
+                {22, 25},
+                {20, 25},
+                {18, 25},
+                {18, 28},
+                {17, 30},
+                {15, 29},
+                {15, 30},
+                {21, 29},
+                {21, 30},
+                {17, 32},
+                {17, 33},
+                {20, 31},
+                {21, 33},
+                {21, 32},
+                {32, 27},
+                {28, 25},
+                {28, 27},
+                {28, 28},
+                {30, 25},
+                {31, 27},
+                {27, 31},
+                {26, 34},
+                {27, 33},
+                {29, 36},
+                {32, 36}
+            }
+        },
+        ["Dark Helmet"] = {
+            id = 2931,
+            mapid = 138,
+            locations = {
+                {16, 34},
+                {17, 36},
+                {14, 35},
+                {33, 30},
+                {32, 29},
+                {31, 30},
+                {31, 28},
+                {35, 29},
+                {29, 25},
+                {28, 24},
+                {26, 24},
+                {25, 23},
+                {23, 25},
+                {23, 22},
+                {20, 22},
+                {19, 20},
+                {20, 19},
+                {17, 19},
+                {14, 17},
+                {16, 15},
+                {14, 16},
+                {14, 15},
+                {13, 15}
+            }
+        },
+        ["Myradrosh"] = {
+            id = 2932,
+            mapid = 139,
+            locations = {
+                {29, 21},
+                {28, 22},
+                {29, 22},
+                {28, 20},
+                {28, 24},
+                {30, 24},
+                {28, 26},
+                {31, 25},
+                {33, 26},
+                {34, 24},
+                {36, 24},
+                {14, 26},
+                {13, 25},
+                {13, 24},
+                {12, 23},
+                {12, 21},
+                {11, 22}
+            }
+        },
+        ["Vuokho"] = {
+            id = 2933,
+            mapid = 180,
+            locations = {
+                {16, 18},
+                {15, 18},
+                {15, 17},
+                {13, 17},
+                {15, 15},
+                {14, 14},
+                {15, 12},
+                {15, 11},
+                {19, 15},
+                {23, 16},
+                {23, 15},
+                {21, 15},
+                {24, 16},
+                {23, 13},
+                {22, 11},
+                {22, 10},
+                {23, 9},
+                {22, 8},
+                {22, 7},
+                {21, 7},
+                {25, 8},
+                {27, 6},
+                {27, 7}
+            }
+        },
+        ["Naul"] = {
+            id = 2934,
+            mapid = 155,
+            locations = {
+                {24, 20},
+                {24, 22},
+                {25, 24},
+                {26, 25},
+                {27, 21},
+                {28, 22},
+                {28, 26},
+                {29, 28},
+                {30, 30},
+                {31, 31},
+                {23, 27},
+                {21, 28},
+                {20, 29},
+                {18, 29},
+                {16, 29},
+                {16, 27},
+                {15, 26},
+                {13, 25},
+                {13, 28},
+                {11, 29},
+                {11, 27},
+                {9, 27},
+                {6, 29},
+                {22, 19},
+                {21, 16},
+                {20, 19},
+                {18, 19},
+                {17, 21},
+                {14, 20},
+                {16, 18},
+                {14, 18},
+                {11, 20},
+                {11, 19},
+                {9, 15},
+                {9, 14},
+                {9, 12},
+                {11, 13},
+                {12, 14},
+                {9, 21},
+                {6, 20},
+                {5, 18},
+                {4, 17},
+                {6, 16},
+                {33, 24},
+                {35, 23},
+                {36, 23},
+                {32, 17},
+                {35, 15},
+                {32, 15},
+                {28, 15},
+                {27, 13},
+                {25, 14},
+                {30, 12},
+                {28, 11},
+                {30, 11},
+                {25, 11},
+                {25, 9},
+                {23, 8},
+                {29, 8},
+                {32, 7}
+            }
+        },
+        ["Leech King"] = {
+            id = 2935,
+            mapid = 156,
+            locations = {
+                {19, 8},
+                {15, 10},
+                {14, 10},
+                {16, 12},
+                {14, 12},
+                {14, 14},
+                {12, 12},
+                {13, 14},
+                {9, 14},
+                {11, 15},
+                {12, 17},
+                {23, 11},
+                {24, 12},
+                {26, 13},
+                {25, 10},
+                {27, 10},
+                {27, 9},
+                {29, 8},
+                {28, 6},
+                {27, 13},
+                {30, 6},
+                {32, 7},
+                {33, 9},
+                {32, 10},
+                {32, 11},
+                {34, 12},
+                {32, 14},
+                {30, 15},
+                {29, 15},
+                {28, 14}
+            }
+        }
+    },
+    HW = {},
+    SB = {},
+    ShB = {}
+}
+
+EHDB.billIdList = {
+    ARR = 2001362,
+    HW = 2001703,
+    SB = 2002116,
+    ShB = 2002631
+}
+
+EHDB.huntLevel = {
+    ["Elite Marks"] = "ARR",
+    ["Elite Clan Marks"] = "HW",
+    ["Elite Veteran Clan Marks"] = "SB",
+    ["Elite Clan Nutsy Marks"] = "ShB"
+}
+
+
+
+EHAPI = {}
+
+function EHAPI.Test()
+    d(tostring(EliteHunt.IsHuntControlOpen()))
+end
+
+function EHAPI.Stats()
+    d("[EH] Current Status:")
+    d("[EH] Hunting:")
+    d(EliteHunt.currentHunt)
+    d("[EH] Hunt List: ")
+    d(EliteHunt.huntList)
+end
+
+function EHAPI.Explore(table)
+    for k, v in pairs(table) do
+        d(k)
+    end
+end
+
+return EHAPI
